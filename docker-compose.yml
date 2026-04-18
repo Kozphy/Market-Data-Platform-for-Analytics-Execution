@@ -1,27 +1,64 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: market-data-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: market_data
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1 -p 5432",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - market_data_net
 
   pipeline:
     build:
       context: .
+      dockerfile: Dockerfile
     container_name: market-data-pipeline
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATA_LAKE_ROOT: /app/data
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
+      PYTHONUNBUFFERED: "1"
     depends_on:
-      - postgres
-    volumes:
-      - ./data:/app/data
+      postgres:
+        condition: service_healthy
     command: ["python", "-m", "market_data_platform.cli", "scheduler"]
+    volumes:
+      # Dev-friendly live code mount
+      - ./:/app
+      # Persistent local Parquet lakehouse storage (bronze/silver/gold)
+      - ./data:/app/data
+    networks:
+      - market_data_net
 
 volumes:
   postgres_data:
+    name: market_data_postgres_data
+
+networks:
+  market_data_net:
+    name: market_data_net
