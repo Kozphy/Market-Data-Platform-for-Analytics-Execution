@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: market-data-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: market_data
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  pipeline:
+    build:
+      context: .
+    container_name: market-data-pipeline
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "market_data_platform.cli", "scheduler"]
+
+volumes:
+  postgres_data:
