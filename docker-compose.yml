@@ -6,9 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -16,11 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1 -p 5432",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -38,20 +34,14 @@ services:
       - .env
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      DATA_LAKE_ROOT: /app/data
-      BINANCE_API_KEY: ${BINANCE_API_KEY}
-      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
       PYTHONUNBUFFERED: "1"
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["python", "-m", "market_data_platform.cli", "scheduler"]
     volumes:
-      # Dev-friendly live code mount
       - ./:/app
-      # Persistent local Parquet lakehouse storage (bronze/silver/gold)
       - ./data:/app/data
+    command: ["python", "-m", "market_data_platform.cli", "scheduler"]
     networks:
       - market_data_net
 
