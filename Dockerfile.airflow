@@ -11,10 +11,16 @@ RUN chown -R airflow:root /opt/airflow/project
 USER airflow
 WORKDIR /opt/airflow/project
 
-# Install the app with Airflow's pinned dependency set so we do not upgrade NumPy/Pandas
-# past what apache/airflow:2.10.2-python3.12 was built and tested with.
+# Install runtime deps against Airflow's constraint file, then the project without
+# re-resolving deps (avoids NumPy/Pandas upgrades that break the preinstalled Airflow stack).
 ARG AIRFLOW_CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-2.10.2/constraints-3.12.txt"
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e . --constraint "${AIRFLOW_CONSTRAINTS_URL}"
+    pip install --no-cache-dir \
+      "httpx>=0.27.0" \
+      "pandas>=2.1.4" \
+      "pyarrow>=16.1.0" \
+      "psycopg[binary]>=3.2.1" \
+      --constraint "${AIRFLOW_CONSTRAINTS_URL}" && \
+    pip install --no-cache-dir --no-deps -e .
 
 WORKDIR /opt/airflow
