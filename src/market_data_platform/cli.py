@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +12,14 @@ from market_data_platform.config import ApiSettings, BacktestSettings, PipelineS
 from market_data_platform.ingestion.binance import BinanceMarketDataSource
 from market_data_platform.logging_utils import configure_logging
 from market_data_platform.monitoring.metrics import JobMonitor
+from market_data_platform.orchestration.data_quality import run_postgres_window_checks
 from market_data_platform.orchestration.jobs import PipelineRunner, default_schema_sql_path
+from market_data_platform.orchestration.staged_etl import (
+    run_extract_ohlcv_window,
+    run_load_gold_to_postgres_window,
+    run_transform_bronze_to_silver_window,
+    run_transform_silver_to_gold_window,
+)
 from market_data_platform.orchestration.scheduler import LightweightScheduler
 from market_data_platform.quant.backtesting import ThresholdBacktester
 from market_data_platform.signals.models import ThresholdSignalRule
@@ -189,6 +196,42 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("scheduler", help="Run the lightweight scheduler.")
 
+    def _add_window_args(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument("--symbol", required=True)
+        sub.add_argument("--interval", required=True)
+        sub.add_argument("--window-start", required=True, help="Inclusive ISO-8601 UTC window start.")
+        sub.add_argument("--window-end", required=True, help="Inclusive ISO-8601 UTC window end.")
+
+    extract_airflow = subparsers.add_parser(
+        "extract-ohlcv",
+        help="Airflow stage: fetch Binance OHLCV for a window and write bronze Parquet only.",
+    )
+    _add_window_args(extract_airflow)
+
+    to_silver = subparsers.add_parser(
+        "transform-bronze-to-silver",
+        help="Airflow stage: read bronze for a window, clean, write silver Parquet.",
+    )
+    _add_window_args(to_silver)
+
+    to_gold = subparsers.add_parser(
+        "transform-silver-to-gold",
+        help="Airflow stage: read silver for a window, engineer features, write gold Parquet.",
+    )
+    _add_window_args(to_gold)
+
+    load_pg = subparsers.add_parser(
+        "load-gold-to-postgres",
+        help="Airflow stage: read gold for a window and upsert into PostgreSQL.",
+    )
+    _add_window_args(load_pg)
+
+    dq = subparsers.add_parser(
+        "data-quality-check",
+        help="Airflow stage: validate Postgres rows for a window (dup PK, gaps, non-empty).",
+    )
+    _add_window_args(dq)
+
     return parser
 
 
@@ -258,6 +301,52 @@ def main() -> None:
                     streaming_pipeline.run_forever(symbols)
             finally:
                 streaming_source.close()
+        elif args.command == "extract-ohlcv":
+            runner.bootstrap()
+            rows = run_extract_ohlcv_window(
+                symbol=args.symbol,
+                interval=args.interval,
+                window_start=_parse_timestamp(args.window_start),
+                window_end=_parse_timestamp(args.window_end),
+            )
+            LOGGER.info("Extract stage completed", extra={"payload": {"rows_bronze": rows}})
+        elif args.command == "transform-bronze-to-silver":
+            runner.bootstrap()
+            rows = run_transform_bronze_to_silver_window(
+                symbol=args.symbol,
+                interval=args.interval,
+                window_start=_parse_timestamp(args.window_start),
+                window_end=_parse_timestamp(args.window_end),
+            )
+            LOGGER.info("Silver transform completed", extra={"payload": {"rows_silver": rows}})
+        elif args.command == "transform-silver-to-gold":
+            runner.bootstrap()
+            rows = run_transform_silver_to_gold_window(
+                symbol=args.symbol,
+                interval=args.interval,
+                window_start=_parse_timestamp(args.window_start),
+                window_end=_parse_timestamp(args.window_end),
+            )
+            LOGGER.info("Gold transform completed", extra={"payload": {"rows_gold": rows}})
+        elif args.command == "load-gold-to-postgres":
+            runner.bootstrap()
+            rows = run_load_gold_to_postgres_window(
+                project_root=project_root,
+                symbol=args.symbol,
+                interval=args.interval,
+                window_start=_parse_timestamp(args.window_start),
+                window_end=_parse_timestamp(args.window_end),
+            )
+            LOGGER.info("Postgres load completed", extra={"payload": {"rows_upserted": rows}})
+        elif args.command == "data-quality-check":
+            runner.bootstrap()
+            report = run_postgres_window_checks(
+                symbol=args.symbol,
+                interval=args.interval,
+                window_start=_parse_timestamp(args.window_start),
+                window_end=_parse_timestamp(args.window_end),
+            )
+            LOGGER.info("Data quality completed", extra={"payload": asdict(report)})
         elif args.command == "backtest":
             pipeline_settings = PipelineSettings.from_env()
             backtest_settings = BacktestSettings.from_env()

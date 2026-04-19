@@ -7,6 +7,7 @@ It demonstrates:
 - Bronze/Silver/Gold Parquet lakehouse
 - PostgreSQL serving table with idempotent upserts
 - ETL jobs (historical, incremental, realtime refresh)
+- Apache Airflow (LocalExecutor) orchestrating staged ETL
 - Streaming threshold alerts
 - Backtesting with Sharpe and max drawdown
 - Docker Compose and CLI-first workflow
@@ -47,10 +48,13 @@ src/market_data_platform/
   signals/
   quant/
 sql/postgres/001_create_market_data.sql
+sql/postgres/002_create_airflow_db.sql
+dags/market_data_dag.py
 examples/analytics_queries.sql
 tests/
 docker-compose.yml
 Dockerfile
+Dockerfile.airflow
 ```
 
 ## Quick Start (Docker Compose)
@@ -69,9 +73,21 @@ docker compose up --build
 
 This starts:
 - `postgres` on port `5432`
-- `pipeline` scheduler container
+- `airflow-init` (one-shot DB migrations + admin user)
+- `airflow-webserver` on port `8080` (override with `AIRFLOW_WEBSERVER_PORT`)
+- `airflow-scheduler` (LocalExecutor)
 
 Artifacts are written under `./data`.
+
+Optional legacy single-process scheduler:
+
+```bash
+docker compose --profile legacy up --build
+```
+
+Airflow DAG `market_data_pipeline` runs staged CLI tasks hourly: extract → silver → gold → Postgres → data quality. Set `catchup: true` in `dags/market_data_dag.py` or run `airflow dags backfill` for historical intervals.
+
+If your Postgres volume was created before `sql/postgres/002_create_airflow_db.sql` existed, create the Airflow metadata database once: `CREATE DATABASE airflow;` (as a superuser), then restart `airflow-init`.
 
 ## Quick Start (Local Python)
 
@@ -109,6 +125,18 @@ Incremental ETL:
 
 ```bash
 market-data incremental --symbol BTCUSDT --interval 1m
+```
+
+Airflow staged ETL (fixed UTC window; used by `dags/market_data_dag.py`):
+
+```bash
+WIN_START="2024-05-01T00:00:00+00:00"
+WIN_END="2024-05-01T01:00:00+00:00"
+market-data extract-ohlcv --symbol BTCUSDT --interval 1m --window-start "$WIN_START" --window-end "$WIN_END"
+market-data transform-bronze-to-silver --symbol BTCUSDT --interval 1m --window-start "$WIN_START" --window-end "$WIN_END"
+market-data transform-silver-to-gold --symbol BTCUSDT --interval 1m --window-start "$WIN_START" --window-end "$WIN_END"
+market-data load-gold-to-postgres --symbol BTCUSDT --interval 1m --window-start "$WIN_START" --window-end "$WIN_END"
+market-data data-quality-check --symbol BTCUSDT --interval 1m --window-start "$WIN_START" --window-end "$WIN_END"
 ```
 
 Realtime refresh:
