@@ -1,0 +1,20 @@
+FROM apache/airflow:2.10.2-python3.12
+
+USER root
+
+COPY pyproject.toml README.md /opt/airflow/project/
+COPY src /opt/airflow/project/src
+COPY sql /opt/airflow/project/sql
+
+RUN chown -R airflow:root /opt/airflow/project
+
+USER airflow
+WORKDIR /opt/airflow/project
+
+# Install the app with Airflow's pinned dependency set so we do not upgrade NumPy/Pandas
+# past what apache/airflow:2.10.2-python3.12 was built and tested with.
+ARG AIRFLOW_CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-2.10.2/constraints-3.12.txt"
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -e . --constraint "${AIRFLOW_CONSTRAINTS_URL}"
+
+WORKDIR /opt/airflow
